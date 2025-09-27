@@ -1,0 +1,21 @@
+# Pythonキャッシュ
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 仮想環境
+.venv/
+env/
+venv/
+
+# SQLite ローカルDB（本番ではマイグレーションや本番DBを使う）
+instance/
+*.db
+
+# 環境変数ファイル（秘密情報を含む）
+.env
+
+# OSやエディタのゴミファイル
+.DS_Store
+*.swp

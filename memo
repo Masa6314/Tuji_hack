@@ -1,0 +1,11 @@
+ngrok:（ngrok http 8000）で起動。URLをGASの WEBHOOK_URL にコピペして上書き保存
+ローカルで動いているサーバー (例: http://localhost:8000) をインターネット上の一時URLに変換してくれるサービス。
+ログのForwardingの意味：左のURL（外部公開）にアクセスすると、右のURL（ローカル）に転送される。
+
+
+全体動き：
+・別々のターミナルで
+python app.py
+ngrok http 8000　を起動。
+・ngrokのURLをGASの WEBHOOK_URL にコピペして上書き保存
+・
