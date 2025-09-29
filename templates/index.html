@@ -1,21 +1,134 @@
-{% extends "base.html" %}
-{% block content %}
-<h1>Hello. This is stress results</h1>
-<a href="/create" role="button">新規作成画面</a>
+<!-- templates/index.html -->
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ストレススコア ダッシュボード</title>
 
-{% for form in forms %}    
-    <h2>日にち：{{form.submitted_at}}</h2>
-    <p>Q1：{{form.Q1}}, Q2：{{form.Q2}}</p>
-{%endfor%}
+  <!-- Chart.js（折れ線グラフ用） -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
-{% for post in posts %}    
-    <article>
-        <h2>{{post.title}}</h2>
-        <a href="/{{post.id}}/update" role="button">編集</a>
-        <a href="/{{post.id}}/delete" role="button">削除</a>
-        <p>作成日時：{{post.created_at}}</p>
-        <p>{{post.body}}</p>
-    </article>
-{%endfor%}
+  <style>
+    :root { --card: #ffffff; --border:#e5e7eb; --muted:#6b7280; }
+    html,body { margin:0; padding:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif; background:#f8fafc; color:#0f172a; }
+    .container { max-width: 980px; margin: 28px auto; padding: 0 16px; }
+    .section { background: var(--card); border:1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin-bottom: 18px; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+    .title { font-size: 18px; font-weight: 800; margin: 0 0 10px; }
+    .muted { color: var(--muted); }
+    .big { font-size: 40px; font-weight: 900; margin: 0 10px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background:#f9fafb; font-weight: 700; }
+    .qtext { white-space: pre-wrap; }
+    .badge { display: inline-block; padding: 6px 10px; border-radius: 999px; font-weight: 700; }
+    .ok { background:#ecfeff; color:#065f46; border:1px solid #99f6e4; }
+    .warn { background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; }
+    .danger { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+  </style>
+</head>
+<body>
+  <div class="container">
 
-{% endblock %}
+    <!-- 最新スコア -->
+    <section class="section">
+      <div class="title">最新スコア</div>
+      <div class="muted">記録日時：{{ latest_at }}</div>
+      <div style="margin-top:8px;">
+        合計 <span class="big">{{ latest_score }}</span> 点
+        {% set badge_class = 'ok' if latest_score <= 1 else ('warn' if latest_score <= 3 else 'danger') %}
+        <span class="badge {{ badge_class }}">{{ latest_status }}</span>
+      </div>
+    </section>
+
+    <!-- 折れ線グラフ（日別の最新値） -->
+    <section class="section">
+      <div class="title">日別スコア（同日複数回答は最新のみ）</div>
+      <canvas id="scoreChart" height="120"></canvas>
+    </section>
+
+    <!-- 最新回答の内訳（設問文＋回答＋点） -->
+    <section class="section">
+      <div class="title">最新回答の内訳</div>
+
+      {# 質問コード→設問文（app.py と同じ文言をここにも定義） #}
+      {% set QUESTIONS = {
+        'Q1':  'Q1. 心配事のために睡眠時間が減ったことはありますか？',
+        'Q2':  'Q2. いつも緊張していますか？',
+        'Q3':  'Q3. ものごとに集中できますか？',
+        'Q4':  'Q4. 何か有益な役割を果たしていると思いますか？',
+        'Q5':  'Q5. 自分の問題について立ち向かうことができますか？',
+        'Q6':  'Q6. 物事について決断できると思いますか？',
+        'Q7':  'Q7. いろんな問題を解決できなくて困りますか？',
+        'Q8':  'Q8. 全般的にまあ満足していますか？',
+        'Q9':  'Q9. 日常生活を楽しむことができますか？',
+        'Q10': 'Q10. 不幸せで憂うつと感じますか？',
+        'Q11': 'Q11. 自信をなくしますか？',
+        'Q12': 'Q12. 自分は役にたたない人間だと感じることがありますか？'
+      } %}
+
+      <table>
+        <thead>
+          <tr>
+            <th style="width:56px;">設問</th>
+            <th>設問文</th>
+            <th>回答</th>
+            <th style="width:60px;">点</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in latest_answers %}
+            <tr>
+              <td>{{ a.code }}</td>
+              <td class="qtext">{{ QUESTIONS.get(a.code, a.code) }}</td>
+              <td>{{ a.answer }}</td>
+              <td>{{ a.point }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+  </div>
+
+  <script>
+    // 折れ線グラフ描画
+    const labels = {{ chart_labels|tojson }};
+    const data = {{ chart_values|tojson }};
+
+    const ctx = document.getElementById('scoreChart').getContext('2d');
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: '合計スコア',
+          data,
+          tension: 0.25,
+          pointRadius: 3,
+          borderWidth: 2
+        }]
+      },
+      options: {
+        scales: {
+          y: {
+            suggestedMin: 0,
+            suggestedMax: 12,  // 12問×1点
+            ticks: { stepSize: 1 }
+          }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function(ctx) {
+                return ctx.parsed.y + " 点";
+              }
+            }
+          }
+        }
+      }
+    });
+  </script>
+</body>
+</html>

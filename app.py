@@ -1,16 +1,19 @@
-# app.py（単一ファイル／単一テーブル：FormResponse）
+# app.py
 import os
+from collections import OrderedDict
 from datetime import datetime, timezone
-from flask import Flask, request, abort, jsonify
+from flask import Flask, request, abort, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
-from dotenv import load_dotenv
+from zoneinfo import ZoneInfo        # JST変換用
+from dotenv import load_dotenv       # .env を読み込む
 
 # ===== 設定 =====
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///local.db")
 WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN", "SHARED_SECRET_123")
+JST = ZoneInfo("Asia/Tokyo")
 
-# フォームの質問文（GASの namedValues のキーと**完全一致**させること）
+# Googleフォームの namedValues のキーと完全一致させること
 QUESTIONS = [
     "Q1. 心配事のために睡眠時間が減ったことはありますか？",
     "Q2. いつも緊張していますか？",
@@ -25,7 +28,6 @@ QUESTIONS = [
     "Q11. 自信をなくしますか？",
     "Q12. 自分は役にたたない人間だと感じることがありますか？",
 ]
-# 逆引きマップ（質問文→1..12）
 QUESTION_TO_INDEX = {q: i + 1 for i, q in enumerate(QUESTIONS)}
 
 # ===== Flask/DB =====
@@ -37,34 +39,63 @@ db = SQLAlchemy(app)
 class FormResponse(db.Model):
     __tablename__ = "form_responses"
     id = db.Column(db.Integer, primary_key=True)
-    submitted_at = db.Column(db.DateTime, nullable=False, index=True)
-    # 横持ちで保存（テキスト回答）
-    Q1  = db.Column(db.String, nullable=True)
-    Q2  = db.Column(db.String, nullable=True)
-    Q3  = db.Column(db.String, nullable=True)
-    Q4  = db.Column(db.String, nullable=True)
-    Q5  = db.Column(db.String, nullable=True)
-    Q6  = db.Column(db.String, nullable=True)
-    Q7  = db.Column(db.String, nullable=True)
-    Q8  = db.Column(db.String, nullable=True)
-    Q9  = db.Column(db.String, nullable=True)
-    Q10 = db.Column(db.String, nullable=True)
-    Q11 = db.Column(db.String, nullable=True)
-    Q12 = db.Column(db.String, nullable=True)
-    # 元JSONを保全したい場合はコメントアウトを外す
-    # raw_json = db.Column(db.JSON, nullable=True)
+    submitted_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    # 欠損禁止（NOT NULL）
+    Q1  = db.Column(db.String, nullable=False)
+    Q2  = db.Column(db.String, nullable=False)
+    Q3  = db.Column(db.String, nullable=False)
+    Q4  = db.Column(db.String, nullable=False)
+    Q5  = db.Column(db.String, nullable=False)
+    Q6  = db.Column(db.String, nullable=False)
+    Q7  = db.Column(db.String, nullable=False)
+    Q8  = db.Column(db.String, nullable=False)
+    Q9  = db.Column(db.String, nullable=False)
+    Q10 = db.Column(db.String, nullable=False)
+    Q11 = db.Column(db.String, nullable=False)
+    Q12 = db.Column(db.String, nullable=False)
 
+def to_jst(dt: datetime) -> datetime:
+    """DBから取り出した日時を『UTCとして解釈→JSTへ変換』して返す．"""
+    if dt is None:
+        return None
+    # SQLiteはtz情報を落としやすいので，tzが無ければUTCとみなす
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(JST)
+
+
+# ===== ユーティリティ =====
 def parse_iso8601_z(s: str) -> datetime:
+    """'...Z' 付きISO8601にも対応してUTCで返す．"""
     if not s:
         return datetime.now(timezone.utc)
     s = s.replace("Z", "+00:00") if s.endswith("Z") else s
     dt = datetime.fromisoformat(s)
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
-# ===== Webhook受信 =====
+def answer_point(s: str) -> int:
+    """回答先頭が '1.' または '2.' なら0点，それ以外（3.,4.）は1点．"""
+    if not s:
+        return 0
+    s = s.strip()
+    return 0 if s.startswith("1.") or s.startswith("2.") else 1
+
+def total_score_row(rec) -> int:
+    """1レコード（12問）の合計点．"""
+    return sum(answer_point(getattr(rec, f"Q{i}")) for i in range(1, 13))
+
+def status_label(score: int) -> str:
+    """スコア→状態文言．"""
+    if score <= 1:
+        return "とても健康です！"
+    elif 2 <= score <= 3:
+        return "少し休みましょう！"
+    else:
+        return "休息が必要です！"
+
+# ===== Webhook受信（GAS→Flask） =====
 @app.route("/api/forms/google", methods=["POST"])
 def receive_google_form():
-    # 簡易認証
     if request.headers.get("X-Webhook-Token") != WEBHOOK_TOKEN:
         abort(401, "invalid token")
 
@@ -72,55 +103,82 @@ def receive_google_form():
     named = data.get("responses") or {}
     submitted_at = parse_iso8601_z(data.get("submitted_at"))
 
-    # ひな形（Noneで初期化）
-    values = {f"Q{i}": None for i in range(1, 13)}
-
-    # namedValues から Q1..Q12 へ詰め替え
+    # 詰め替え
+    values = {}
     for question_text, answers in named.items():
         idx = QUESTION_TO_INDEX.get(question_text)
         if not idx:
-            # 未知の設問は無視（フォーム文言が変わっていないか確認）
             continue
-        # Google Formsは配列で届くことが多いので先頭要素を採用
-        ans_text = answers[0] if isinstance(answers, list) and answers else str(answers)
-        values[f"Q{idx}"] = ans_text
+        # 単一選択のみ許容（チェックボックスの複数選択はエラー）
+        if isinstance(answers, list):
+            if len(answers) != 1:
+                abort(400, f"単一選択のみ許可されています: {question_text}")
+            ans_text = answers[0]
+        else:
+            ans_text = str(answers)
+        values[f"Q{idx}"] = ans_text.strip()
+
+    # 欠損・空文字チェック（12問すべて必須）
+    missing = [f"Q{i}" for i in range(1, 13) if not values.get(f"Q{i}")]
+    if missing:
+        abort(400, f"必須回答が不足しています: {', '.join(missing)}")
 
     rec = FormResponse(submitted_at=submitted_at, **values)
-    # rec.raw_json = data  # 保存したい場合
     db.session.add(rec)
     db.session.commit()
 
     return jsonify({"ok": True, "id": rec.id})
 
-# ===== 簡易確認ページ（テンプレ不要） =====
+# ===== 画面（最新スコア＋状態，日別最新のみの折れ線） =====
 @app.route("/")
 def index():
-    rows = FormResponse.query.order_by(FormResponse.submitted_at.desc()).limit(100).all()
-    def td(x): return "" if x is None else x
-    trs = []
-    for r in rows:
-        tds = "".join([f"<td>{td(getattr(r, f'Q{i}'))}</td>" for i in range(1, 13)])
-        trs.append(f"<tr><td>{r.id}</td><td>{r.submitted_at}</td>{tds}</tr>")
-    header_q = "".join([f"<th>Q{i}</th>" for i in range(1, 13)])
-    html = f"""
-    <html><head><meta charset="utf-8"><title>FormResponses</title></head>
-    <body>
-      <h2>最新100件</h2>
-      <table border="1" cellpadding="6">
-        <tr><th>ID</th><th>submitted_at</th>{header_q}</tr>
-        {''.join(trs) if trs else '<tr><td colspan="14">no data</td></tr>'}
-      </table>
-    </body></html>
-    """
-    return html
+    # 厳密な最新順：submitted_at DESC，かつ同時刻は id DESC
+    rows = (FormResponse.query
+            .order_by(FormResponse.submitted_at.desc(), FormResponse.id.desc())
+            .all())
 
+    # 同一日（JST日付）について「その日の最新のみ」を選ぶ
+    latest_by_day = OrderedDict()
+    for r in rows:
+        jst_day = to_jst(r.submitted_at).date().isoformat()
+        if jst_day not in latest_by_day:
+            latest_by_day[jst_day] = r
+
+    # グラフ用（日付昇順／JST）
+    chart_labels = sorted(latest_by_day.keys())
+    chart_values = [total_score_row(latest_by_day[d]) for d in chart_labels]
+
+    # 全体の最新（表示はJST）
+    latest_rec = rows[0] if rows else None
+    latest_score = total_score_row(latest_rec) if latest_rec else 0
+    latest_status = status_label(latest_score)
+    latest_at = (to_jst(latest_rec.submitted_at).strftime("%Y-%m-%d %H:%M:%S")
+                 if latest_rec else None)
+
+    latest_answers = [
+        {
+            "code": f"Q{i}",
+            "answer": getattr(latest_rec, f"Q{i}") if latest_rec else "",
+            "point": answer_point(getattr(latest_rec, f"Q{i}") if latest_rec else None),
+        }
+        for i in range(1, 13)
+    ]
+
+    return render_template(
+        "index.html",
+        latest_score=latest_score,
+        latest_status=latest_status,
+        latest_at=latest_at,
+        latest_answers=latest_answers,
+        chart_labels=chart_labels,
+        chart_values=chart_values,
+    )
+
+# ===== 起動 =====
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
     app.run(host="0.0.0.0", port=8000, debug=True)
-
-
-
 
 
 
