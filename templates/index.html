@@ -1,134 +1,127 @@
-<!-- templates/index.html -->
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>ストレススコア ダッシュボード</title>
-
-  <!-- Chart.js（折れ線グラフ用） -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-
-  <style>
-    :root { --card: #ffffff; --border:#e5e7eb; --muted:#6b7280; }
-    html,body { margin:0; padding:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif; background:#f8fafc; color:#0f172a; }
-    .container { max-width: 980px; margin: 28px auto; padding: 0 16px; }
-    .section { background: var(--card); border:1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin-bottom: 18px; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
-    .title { font-size: 18px; font-weight: 800; margin: 0 0 10px; }
-    .muted { color: var(--muted); }
-    .big { font-size: 40px; font-weight: 900; margin: 0 10px; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
-    th { background:#f9fafb; font-weight: 700; }
-    .qtext { white-space: pre-wrap; }
-    .badge { display: inline-block; padding: 6px 10px; border-radius: 999px; font-weight: 700; }
-    .ok { background:#ecfeff; color:#065f46; border:1px solid #99f6e4; }
-    .warn { background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; }
-    .danger { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
-  </style>
+  <meta charset="UTF-8">
+  <title>{{ page_title }}</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
-  <div class="container">
+<body class="bg-gray-50 text-gray-900">
 
-    <!-- 最新スコア -->
-    <section class="section">
-      <div class="title">最新スコア</div>
-      <div class="muted">記録日時：{{ latest_at }}</div>
-      <div style="margin-top:8px;">
-        合計 <span class="big">{{ latest_score }}</span> 点
-        {% set badge_class = 'ok' if latest_score <= 1 else ('warn' if latest_score <= 3 else 'danger') %}
-        <span class="badge {{ badge_class }}">{{ latest_status }}</span>
+  <div class="max-w-6xl mx-auto p-6">
+
+    <!-- ページタイトル -->
+    <h1 class="text-2xl font-bold mb-6">{{ page_title }}</h1>
+
+    <!-- スコアチャート -->
+    <div class="bg-white rounded-lg shadow p-4 mb-8">
+      <h2 class="text-lg font-bold mb-2">スコア推移</h2>
+      <canvas id="scoreChart"></canvas>
+    </div>
+
+    <!-- 1) メンバーの状態 -->
+    <div class="mt-6">
+      <h2 class="text-xl font-bold mb-2">メンバーの状態（リスク順）</h2>
+      <div class="text-sm text-gray-500 mb-2">
+        赤=要対応 / 黄=注意 / 緑=良好 / 灰=未回答
       </div>
-    </section>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {% for u in users_overview %}
+        <div class="border rounded-lg p-4 shadow-sm
+                    {% if u.risk == 'high' %}border-red-400 bg-red-50
+                    {% elif u.risk == 'mid' %}border-yellow-400 bg-yellow-50
+                    {% elif u.risk == 'low' %}border-green-400 bg-green-50
+                    {% else %}border-gray-300 bg-gray-50{% endif %}">
+          <div class="flex items-center justify-between mb-2">
+            <div class="font-semibold text-lg">{{ u.display_name }}</div>
+            <span class="text-xs px-2 py-1 rounded
+              {% if u.risk == 'high' %}bg-red-500 text-white
+              {% elif u.risk == 'mid' %}bg-yellow-500 text-white
+              {% elif u.risk == 'low' %}bg-green-500 text-white
+              {% else %}bg-gray-400 text-white{% endif %}">
+              {% if u.risk == 'high' %}要対応
+              {% elif u.risk == 'mid' %}注意
+              {% elif u.risk == 'low' %}良好
+              {% else %}未回答{% endif %}
+            </span>
+          </div>
+          <div class="text-sm text-gray-600">最終: {{ u.latest_at }}</div>
+          <div class="mt-2 text-2xl font-bold">
+            {{ u.latest_score if u.latest_score is not none else "-" }}
+          </div>
+          <div class="text-sm">{{ u.latest_status }}</div>
+          <div class="mt-3 flex gap-2">
+            <a href="/user/{{ u.external_token }}"
+               class="bg-blue-500 text-white text-sm px-3 py-1 rounded">
+               人別ダッシュボード
+            </a>
+            <button onclick="navigator.clipboard.writeText('{{ request.url_root }}user/{{ u.external_token }}')"
+                    class="border text-sm px-3 py-1 rounded">
+              リンクをコピー
+            </button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
 
-    <!-- 折れ線グラフ（日別の最新値） -->
-    <section class="section">
-      <div class="title">日別スコア（同日複数回答は最新のみ）</div>
-      <canvas id="scoreChart" height="120"></canvas>
-    </section>
+    <!-- ▼ 間に余白 -->
+    <div class="mt-10"></div>
 
-    <!-- 最新回答の内訳（設問文＋回答＋点） -->
-    <section class="section">
-      <div class="title">最新回答の内訳</div>
-
-      {# 質問コード→設問文（app.py と同じ文言をここにも定義） #}
-      {% set QUESTIONS = {
-        'Q1':  'Q1. 心配事のために睡眠時間が減ったことはありますか？',
-        'Q2':  'Q2. いつも緊張していますか？',
-        'Q3':  'Q3. ものごとに集中できますか？',
-        'Q4':  'Q4. 何か有益な役割を果たしていると思いますか？',
-        'Q5':  'Q5. 自分の問題について立ち向かうことができますか？',
-        'Q6':  'Q6. 物事について決断できると思いますか？',
-        'Q7':  'Q7. いろんな問題を解決できなくて困りますか？',
-        'Q8':  'Q8. 全般的にまあ満足していますか？',
-        'Q9':  'Q9. 日常生活を楽しむことができますか？',
-        'Q10': 'Q10. 不幸せで憂うつと感じますか？',
-        'Q11': 'Q11. 自信をなくしますか？',
-        'Q12': 'Q12. 自分は役にたたない人間だと感じることがありますか？'
-      } %}
-
-      <table>
-        <thead>
+    <!-- 2) 最新回答の内訳 -->
+    <div class="mt-6">
+      <h2 class="text-xl font-bold mb-2">最新回答の内訳</h2>
+      <table class="min-w-full border border-gray-300">
+        <thead class="bg-gray-100">
           <tr>
-            <th style="width:56px;">設問</th>
-            <th>設問文</th>
-            <th>回答</th>
-            <th style="width:60px;">点</th>
+            <th class="border px-2 py-1">設問</th>
+            <th class="border px-2 py-1">回答</th>
+            <th class="border px-2 py-1">点数</th>
           </tr>
         </thead>
         <tbody>
-          {% for a in latest_answers %}
-            <tr>
-              <td>{{ a.code }}</td>
-              <td class="qtext">{{ QUESTIONS.get(a.code, a.code) }}</td>
-              <td>{{ a.answer }}</td>
-              <td>{{ a.point }}</td>
-            </tr>
+          {% for ans in latest_answers %}
+          <tr>
+            <td class="border px-2 py-1">{{ ans.code }}</td>
+            <td class="border px-2 py-1">{{ ans.answer }}</td>
+            <td class="border px-2 py-1 text-center
+                {% if ans.point == 1 %}text-red-500
+                {% elif ans.point == 0 %}text-green-500{% endif %}">
+              {{ ans.point }}
+            </td>
+          </tr>
           {% endfor %}
         </tbody>
       </table>
-    </section>
+    </div>
 
   </div>
 
+  <!-- チャート描画 -->
   <script>
-    // 折れ線グラフ描画
-    const labels = {{ chart_labels|tojson }};
-    const data = {{ chart_values|tojson }};
-
-    const ctx = document.getElementById('scoreChart').getContext('2d');
-    const chart = new Chart(ctx, {
+    const ctx = document.getElementById('scoreChart');
+    new Chart(ctx, {
       type: 'line',
       data: {
-        labels,
+        labels: {{ chart_labels|tojson }},
         datasets: [{
-          label: '合計スコア',
-          data,
-          tension: 0.25,
-          pointRadius: 3,
-          borderWidth: 2
+          label: 'スコア',
+          data: {{ chart_values|tojson }},
+          borderColor: 'rgb(75, 192, 192)',
+          tension: 0.2
         }]
       },
       options: {
-        scales: {
-          y: {
-            suggestedMin: 0,
-            suggestedMax: 12,  // 12問×1点
-            ticks: { stepSize: 1 }
-          }
-        },
+        responsive: true,
         plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: function(ctx) {
-                return ctx.parsed.y + " 点";
-              }
-            }
-          }
+          legend: { display: false }
+        },
+        scales: {
+          y: { beginAtZero: true, max: 12 }
         }
       }
     });
   </script>
+
 </body>
 </html>
