@@ -1,88 +1,157 @@
-# Googleフォーム × Flask × LINE Messaging API 連携アプリ（最新版）
+# Tuji-Hack — Googleフォーム × Flask × LINE Messaging API 連携アプリ
 
-Googleフォーム → Googleスプレッドシート → Flaskアプリ のデータ連携を実現するアプリです。  
-Apps Script を用いてフォーム回答を Webhook 経由で Flask に送信し、LINE Messaging API と連携して**研究室メンバーのストレス管理**を行います。  
-この README は「友だち追加直後のURL自動配布」と「毎日9:00の自動配布（スケジューラON/OFF切替）」を反映した最新版です。
+Googleフォーム → Googleスプレッドシート → **Flask**（DB保存/可視化）へ連携し、  
+**LINE** からユーザーごとに「プレフィル済みフォームURL」＆「個別ダッシュボードURL」を配布するアプリ。  
+ローカル開発中は **ngrok** で外部公開します。
+
+---
+
+## できること（概要）
+
+- Googleフォームの回答を Apps Script(Webhook) 経由で Flask に送信し **DB保存（ユーザー別）**  
+- **全体ダッシュボード**（`/`） と **人別ダッシュボード**（`/user/<external_token>`）を表示  
+- LINEの **友だち追加（follow）直後に即時返信**：  
+  - ユーザー専用の **フォームURL**（ユーザーIDを事前入力）  
+  - ユーザー専用の **ダッシュボードURL**  
+- （任意）**毎日 9:00 にフォームURLを自動送信**（APScheduler）
+
+> 注: `external_token` は推測困難なランダム文字列。ユーザー識別に使用します。
 
 ---
 
 ## 動作環境
 
 - **Python 3.11.x**（動作保証）
-- Flask / SQLAlchemy / python-dotenv / requests
-- ngrok（ローカルサーバ公開）
-- LINE Messaging API（push通知）
+- SQLite（開発用）
+- ngrok（ローカル公開用）
 
 ---
 
-## セットアップ手順
+## ディレクトリ構成（最小）
 
-### 1) 仮想環境の準備
-```bash
-python -m venv .venv
-# macOS / Linux
-source .venv/bin/activate
-# Windows (PowerShell)
-# .\.venv\Scripts\Activate.ps1
-# Windows (cmd)
-# .\.venv\Scripts\activate.bat
+```
+Tuji_hack/
+├─ app.py
+├─ requirements.txt
+├─ .env                   # 環境変数
+├─ instance/
+│  └─ local.db           # SQLite DB（初回は空でもOK）
+├─ templates/
+│  └─ index.html         # ダッシュボード（全体/人別共通）
+└─ images/               # スクリーンショット
+   ├─ image-1.png        # 回答タブ
+   ├─ image.png          # 新規スプレッドシート作成
+   ├─ image-2.png        # Apps Script メニュー
+   ├─ image-3.png        # CODE.gs へリネーム
+   ├─ image-5.png        # トリガー設定
+   ├─ image-8.png        # 権限付与（Allow）
+   ├─ image-9.png        # ngrok Forwarding ログ
+   └─ image-10.png       # Flask 起動画面
 ```
 
-### 2) 依存インストール
+> `instance/local.db` は **絶対パス** を `.env` の `DATABASE_URL` に設定すると安全です。
+
+---
+
+## セットアップ
+
+### 1) 仮想環境 & 依存インストール
+
 ```bash
+python -m venv .venv
+
+# macOS / Linux
+source .venv/bin/activate
+
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+
+# Windows (cmd)
+.venv\Scripts\activate.bat
+
 pip install -r requirements.txt
 ```
 
-### 3) データベースの準備
+### 2) DB ファイル
+
 ```bash
 mkdir -p instance
-# 空ファイルでOK（起動時に自動でテーブル生成）
+# macOS/Linux
 touch instance/local.db
+# Windows(PowerShell)
+# ni instance/local.db
 ```
 
-### 4) `.env` をプロジェクト直下に作成（**最新版**）
-```env
-# --- Flask & DB ---
+### 3) `.env` を作成（**重要**）
+
+```ini
+# DB
+DATABASE_URL=sqlite:///instance/local.db
 WEBHOOK_TOKEN=SHARED_SECRET_123
-# macOS / Linux 例
-DATABASE_URL=sqlite:////Users/<USER>/MyHobby/Tuji_hack/instance/local.db
-# Windows 例（どちらか片方のみ残す）
-# DATABASE_URL=sqlite:///C:/Users/<USER>/MyHobby/Tuji_hack/instance/local.db
 
-FLASK_ENV=development
+# LINE Messaging API
+LINE_CHANNEL_SECRET=＜LINE Developers で発行したチャネルシークレット＞
+LINE_CHANNEL_ACCESS_TOKEN=＜同 アクセストークン＞
 
-# --- LINE Messaging API ---
-LINE_CHANNEL_SECRET=YOUR_LINE_CHANNEL_SECRET
-LINE_CHANNEL_ACCESS_TOKEN=YOUR_LINE_CHANNEL_ACCESS_TOKEN
+# Google フォーム（ユーザーID設問を用意しておくこと）
+FORM_BASE_URL="https://docs.google.com/forms/d/e/XXXXXXXXXXXXXXXX/viewform?usp=pp_url"
+FORM_ENTRY_ID="entry.1391493516"   # 例: 「ユーザーID」設問の entry.<数字>
 
-# --- Google フォーム（プレフィルURL 配布用）---
-FORM_BASE_URL="https://docs.google.com/forms/d/e/<FORM_ID>/viewform?usp=pp_url"
-FORM_ENTRY_ID=entry.1391493516  # 「ユーザーID」短答設問の entry.<数字>
+# Web アプリの外部URL（開発中は ngrok の https を使う）
+APP_BASE_URL=https://nonaccenting-lichenologic-dion.ngrok-free.dev
 
-# --- 日次配信用（保護トークン）---
-DAILY_PUSH_TOKEN=TASK_SECRET_123
-
-# --- スケジューラ（APScheduler）---
-# 1: スケジューラを起動（毎日09:00 JST に自動配布）
-# 0: スケジューラを起動しない（Flaskは起動する／外部cron等を利用）
+# スケジューラ（毎朝9:00に送る）
 ENABLE_SCHEDULER=1
+SCHEDULE_CRON_MIN=0
+SCHEDULE_CRON_HOUR=9
+SCHEDULE_TZ=Asia/Tokyo
 ```
 
-> **重要:** `DATABASE_URL` は**絶対パス推奨**。  
-> macOS/Linux は `sqlite:////絶対パス/.../local.db`（スラッシュ4つ）、Windows は `sqlite:///C:/絶対パス/.../local.db`。
+> - `APP_BASE_URL` が `http://localhost:8000` のままだと **他者はアクセス不可**。  
+> - メンバーに共有する場合は **ngrok の https URL** を設定します。
 
-### 5) Googleフォーム連携設定（GAS）
+### 4) Flask を起動
 
-1. Googleフォームに **短答式「ユーザーID」**（必須）を追加。  
-2. 回答の保存先をスプレッドシートに設定。  
+```bash
+python app.py
+# ブラウザ: http://localhost:8000
+```
+
+![アプリ起動](images/image-10.png)
+
+### 5) ngrok で公開
+
+```bash
+ngrok http 8000
+# 例: https://nonaenting-lichologic-dion.ngrok-free.dev → これを APP_BASE_URL に設定
+```
+
+![ngrokログ](images/image-9.png)
+
+---
+
+## Googleフォーム側の準備
+
+1. フォームの **回答タブ** を開き、「スプレッドシートにリンク」をクリック  
    ![フォーム回答タブ](images/image-1.png)
-3. スプレッドシートの **拡張機能 → Apps Script** を開き、`CODE.gs` に以下を貼付：  
+
+2. 「新しいスプレッドシートを作成」 → 「作成」  
+   ![新しいスプレッドシート](images/image.png)
+
+3. スプレッドシートの **拡張機能 → Apps Script** を選択  
    ![Apps Script 選択](images/image-2.png)
 
+4. Apps Script のファイル名を `CODE.gs` に変更  
+   ![ファイル名変更](images/image-3.png)
+
+5. 下記コードを貼り付け（`WEBHOOK_URL` は **ngrok の https** を使用）
+
 ```javascript
-const WEBHOOK_URL = "https://<ngrok>/api/forms/google";
+// ===== 設定（あなたのFlask公開URLと共有シークレット） =====
+const WEBHOOK_URL = "https://nonacceing-licnologc-dion.ngrok-free.dev/api/forms/google";
 const SHARED_SECRET = "SHARED_SECRET_123";
 
+// フォーム送信時に自動で呼ばれる
 function onFormSubmit(e) {
   try {
     const payload = {
@@ -102,109 +171,138 @@ function onFormSubmit(e) {
   }
 }
 ```
-4. **トリガー**で「フォーム送信時に `onFormSubmit`」を登録（初回は権限許可）。  
-   ![トリガー追加](images/image-5.png)  
+
+6. **トリガー** を追加（「フォーム送信時」）  
+   ![トリガー追加](images/image-5.png)
+
+7. 初回保存時に権限エラーが出たら、**自分のアカウント**で認可 → **Allow**  
    ![認証画面](images/image-8.png)
 
-> `FORM_ENTRY_ID` は「回答の事前入力」で生成したURLの `entry.<数字>` を控えて `.env` に設定。
+---
 
-### 6) ngrok で公開
-```bash
-ngrok http 8000
-```
-- 表示された **Forwarding(HTTPS)** を `CODE.gs` の `WEBHOOK_URL` に反映。  
-  例）`https://xxxx-xxxx-xxx.ngrok-free.dev/api/forms/google`  
-  ![ngrokログ](images/image-9.png)
+## LINE 側の設定（超重要）
 
-- LINE Webhook も `https://<ngrok>/callback` を設定して「有効化」。
+- **Webhook URL**: `https://nenting-lichogic-dion.ngrok-free.dev/callback`  
+- **Webhook**: 利用する（オン）  
+- **チャネルアクセストークン / シークレット**: `.env` に設定  
+- **応答設定 → あいさつメッセージ**: **オフ**（公式定型文を無効化して自前返信のみ表示）  
+- **応答設定 → 応答メッセージ**: 不要なら **オフ**
 
-### 7) Flask 起動
-```bash
-python app.py
-```
-- ブラウザで http://localhost:8000 を開く。  
-  ![アプリ起動](images/image-10.png)
+> 友だち追加（`follow`）で **reply** により即時に「フォームURL & ダッシュボードURL」を返します。  
+> 日次定期送信は APScheduler が **push** で実行します。
 
 ---
 
-## できること（アプリ機能）
+## 挙動（ユーザーストーリー）
 
-### 1. 友だち追加直後の **URL自動配布**
-- ユーザーが Official アカウントを **友だち追加 → 何か1メッセージ送信** すると、`/callback` が受信。  
-- サーバ側で
-  - LINE `userId` を登録
-  - `external_token`（ランダム）を発行
-  - LINE プロフィールの `displayName` を取得して `display_name` に保存
-  - `.env` の `FORM_BASE_URL` / `FORM_ENTRY_ID` が設定されていれば、**個人用プレフィルURLを push で自動返信**
-
-### 2. 毎日9:00 JST に **自動でURL配布**
-- `.env` の `ENABLE_SCHEDULER=1` なら APScheduler が起動し、**毎朝9時(JST)** に登録済みユーザーへ一斉 push。
-- `.env` を `ENABLE_SCHEDULER=0` にすると、**スケジューラだけ停止**（Flask は起動します）。外部 cron 等で代替可能。
-
-### 3. 外部から叩ける **日次配信API**
-- エンドポイント：`POST /tasks/daily_push`  
-- ヘッダ：`X-Task-Token: <DAILY_PUSH_TOKEN>`  
-- 例：
-```bash
-curl -s -X POST -H "X-Task-Token: TASK_SECRET_123" http://localhost:8000/tasks/daily_push
-# => {"ok": true, "sent": N, "skipped": M}
-```
-- サーバ常時稼働でない場合は、GitHub Actions / Cloud Scheduler / crontab などから上記を毎日実行。
-
-### 4. ダッシュボード
-- `/` … **最新の回答**と**メンバーの状態（ヤバい順）**をカードで可視化。  
-- `/user/<external_token>` … **人別ダッシュボード**（最新スコア・詳細・日別最新のみの折れ線）。
+1. ユーザーが LINE で**友だち追加**  
+2. `/callback` が **署名検証** → `userId` を取得  
+3. DB にユーザーを作成（初回は `external_token` 自動発行、`display_name` を LINE プロフィールから取得）  
+4. **個人プレフィルURL**（`FORM_BASE_URL + entry...=<external_token>`）と  
+   **ダッシュボードURL**（`APP_BASE_URL/user/<external_token>`）を **reply** で即時送信  
+5. 以後はフォーム回答があるたびに **Webhook → DB保存 → ダッシュボード反映**  
+6. スケジューラが有効なら **毎朝9:00にフォームURLを push**
 
 ---
 
-## LINE 側の設定チェック
+## エンドポイント（主なもの）
 
-- Messaging API を有効化。  
-- Webhook URL：`https://<ngrok>/callback` を設定して **有効化**。  
-- 応答設定の **既定のメッセージ**は **OFF**（自動メッセージが出ないように）。  
-- `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN` を `.env` に設定。
+- `POST /api/forms/google` — GAS からの Webhook 受け口（トークンヘッダ必須）  
+- `GET /` — 全体ダッシュボード（リスク順カード + 折れ線 + 直近回答）  
+- `GET /user/<external_token>` — 個人ダッシュボード（本人専用ビュー）  
+- `POST /callback` — LINE Webhook（follow/message 等のイベント）  
+- `POST /register_line_user` — 手動登録デバッグ用（`line_user_id` を渡すと `external_token` 付与）
 
 ---
 
 ## トラブルシュート
 
-- **`ENABLE_SCHEDULER=0` にしたら起動しない？**  
-  → 起動します。スケジューラが起動しないだけで、Flask サーバは通常どおり起動します。  
-  ログに `Scheduler disabled (ENABLE_SCHEDULER!=1)` が出ていればOK。
+**友だち追加したのにURLが来ない**  
+- Webhook URL が **ngrok の https** か、**Webhook利用がオン** か確認  
+- 公式 **あいさつメッセージ** を **オフ**（二重/競合防止）  
+- `LINE_CHANNEL_SECRET/ACCESS_TOKEN` が正しいか  
+- サーバログに `invalid signature` が出ていないか  
+- Flask と ngrok の両方が稼働しているか
 
-- **`unknown user token`**  
-  → プレフィルURLの `external_token` が DB 未登録、または `FORM_ENTRY_ID` が誤り。  
-    友だちが一度メッセージを送る（/callback 発火）→ トークン自動発行 → 配布URLで回答、が正攻法。
+**GAS のトリガー頻度を変えたら LINE が動かなくなった**  
+- LINE 即時返信は **GAS 無関係**。`/callback` が受け取れていない可能性が高い  
+  → ngrok URL を張り替えたのに **LINE側の Webhook URL を更新していない** 等が典型
 
-- **push が来ない**  
-  → Webhook 有効化、`LINE_CHANNEL_*` 設定、相手が「友だち追加後に最初のメッセージを送ったか」を確認。  
-    企業/グループトークでは `userId` が取れない場合があるため**1:1トーク**でテスト。
-
-- **別DBを参照している**  
-  → `.env` の `DATABASE_URL` が相対パスだったり誤っている可能性。**絶対パス**推奨。
-
-- **/user/<token> が 404**  
-  → その `external_token` を持つユーザーが DB にいない。トップの「メンバーの状態」カードから遷移が安全。
+**404 /user/<token> になる**  
+- その `external_token` を持つユーザーが DB に存在しているか確認  
+  （友だち追加→初回返信時にトークンが払い出されます）
 
 ---
 
-## 画像（スクショ配置パス）
+## セキュリティ/運用メモ
 
-- `images/image-1.png` … フォームの回答タブ（スプレッドシートにリンク）  
-- `images/image.png` … 新しいスプレッドシートを作成  
-- `images/image-2.png` … スプレッドシート → 拡張機能 → Apps Script  
-- `images/image-3.png` … Apps Script のファイル名を `CODE.gs` へ変更  
-- `images/image-5.png` … トリガー追加画面  
-- `images/image-8.png` … 権限承認（初回のみ）  
-- `images/image-9.png` … ngrok の Forwarding 表示  
-- `images/image-10.png` … Flask アプリ起動確認
-
-> 画像は `images/` ディレクトリに上記ファイル名で配置（相対パス参照）。
+- ダッシュボードURLは **トークンを知っていれば閲覧可能**（認証なし）。共有先は信頼できるメンバーに限定  
+- 本番運用は ngrok ではなく常時稼働サーバへ  
+- スキーマ変更時は Alembic 等のマイグレーションを検討（開発中は DB を削除して作り直しも可）
 
 ---
 
-## ひとことメモ（所感）
+## 動作確認（手元 curl）
 
-- 友だち追加直後の自動配布で「最初の一歩」を迷わせないのが◎。  
-- スケジューラは `ENABLE_SCHEDULER` で**簡単にON/OFF**できるので、開発中はオフ、本番はオン＋外部cronの併用もやりやすいです。  
-- プレフィルURLに `external_token` を使う運用は、**個人を特定しつつメール不要**でシンプル。運用コストが低く実用的でした。
+```bash
+# 1) 手動ユーザー登録（デバッグ用）
+curl -s -X POST http://localhost:8000/register_line_user \
+  -H "Content-Type: application/json" \
+  -d '{"line_user_id":"TEST_LINE_USER_001","name":"テスト太郎"}'
+
+# 2) GAS → Flask Webhook の疑似POST
+curl -s -X POST http://localhost:8000/api/forms/google \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Token: SHARED_SECRET_123" \
+  -d '{
+    "submitted_at":"2025-01-01T00:00:00Z",
+    "responses":{
+      "ユーザーID":["＜1で受け取った external_token を入れる＞"],
+      "Q1. 心配事のために睡眠時間が減ったことはありますか？":["1. そんなことはない"],
+      "Q2. いつも緊張していますか？":["1. そんなことはない"],
+      "Q3. ものごとに集中できますか？":["3. いつもよりできない"],
+      "Q4. 何か有益な役割を果たしていると思いますか？":["3. いつもよりできない"],
+      "Q5. 自分の問題について立ち向かうことができますか？":["1. そんなことはない"],
+      "Q6. 物事について決断できると思いますか？":["2. いつもと同じ"],
+      "Q7. いろんな問題を解決できなくて困りますか？":["2. いつもと同じ"],
+      "Q8. 全般的にまあ満足していますか？":["3. いつもより多くはない"],
+      "Q9. 日常生活を楽しむことができますか？":["3. いつもほどではない"],
+      "Q10. 不幸せで憂うつと感じますか？":["2. いつもと同じ"],
+      "Q11. 自信をなくしますか？":["3. いつもよりかなり多い"],
+      "Q12. 自分は役にたたない人間だと感じることがありますか？":["2. いつもより多くはない"]
+    }
+  }'
+```
+
+---
+
+## 付録：あいさつメッセージを無効化（公式定型文を消す）
+
+1. **LINE Official Account Manager** → **設定 → 応答設定**  
+2. **あいさつメッセージ** を **オフ**（必要なら **応答メッセージ** もオフ）  
+3. **保存**  
+4. **Messaging API → Webhook** を **有効**、URL を `https://<ngrok>/callback` に設定
+
+> これで友だち追加時は、当アプリの `/callback` が送る **自前の案内のみ** が届きます。
+
+---
+
+## ひとこと
+
+現状は **プレフィルURL＋トークン方式** で個人識別を実現しています。  
+厳密な秘匿やアクセス制御が必要なら、将来的に **ログイン認証**（LINEログイン / OIDC / パスワードレス等）で保護する設計に拡張してください。
+
+---
+
+### 備考（画像について）
+上記 README は、次の画像ファイルを **`images/`** に配置して参照します。  
+存在しない場合は、ファイル名を合わせて配置してください。
+
+- **images/image-1.png**（フォーム回答タブ）  
+- **images/image.png**（新規スプレッドシート作成）  
+- **images/image-2.png**（Apps Script メニュー）  
+- **images/image-3.png**（CODE.gs リネーム）  
+- **images/image-5.png**（トリガー設定）  
+- **images/image-8.png**（権限付与 Allow）  
+- **images/image-9.png**（ngrok Forwarding ログ）  
+- **images/image-10.png**（Flask 起動画面）

@@ -1,30 +1,26 @@
 # =============================================================================
 # Googleフォーム × Flask × LINE Messaging API 連携アプリ
 #
-# 追加した機能
-# - LINE の follow（友だち追加）イベント受信で、個別のプレフィルURLを即時 push 送信
-# - APScheduler（JST）で毎日 9:00 に登録メンバー全員へフォームURLを一斉送信
-#
-# できること（全体）
+# できること
 # - Apps Script → Webhook で Googleフォーム回答を受信しDB保存（ユーザー別）
 # - 全体ダッシュボード（/）と人別ダッシュボード（/user/<external_token>）
 # - LINEのWebhook (/callback) で userId を受け取り、初回時に
 #   1) external_token を発行
 #   2) LINEプロフィール(displayName) を取得して表示名に反映
-#   3) 個人プレフィルURLをpushで返信（FORM_BASE_URL / FORM_ENTRY_ID 必要）
-# - 毎日 9:00(JST) の自動一斉送信（APScheduler）
+#   3) 個人プレフィルURLとダッシュボードURLを自動返信（reply/push）
 #
-# 必要な環境変数（.env など）
-# - DATABASE_URL=sqlite:///instance/local.db       # 絶対パス推奨
-# - WEBHOOK_TOKEN=SHARED_SECRET_123                # GAS→Flask の簡易認証
-# - LINE_CHANNEL_SECRET=...                        # Messaging APIのチャネルシークレット
-# - LINE_CHANNEL_ACCESS_TOKEN=...                  # 同 アクセストークン
+# 重要な設定（.env 推奨）
+# - DATABASE_URL=sqlite:///instance/local.db など（絶対パス推奨）
+# - WEBHOOK_TOKEN=SHARED_SECRET_123               # GAS→Flask の簡易認証
+# - LINE_CHANNEL_SECRET=...                       # Messaging API のチャネルシークレット
+# - LINE_CHANNEL_ACCESS_TOKEN=...                 # 同 アクセストークン
 # - FORM_BASE_URL="https://docs.google.com/forms/d/e/XXXX/viewform?usp=pp_url"
-# - FORM_ENTRY_ID="entry.1391493516"               # 「ユーザーID」設問の entry.<数字>
-# - ENABLE_SCHEDULER=1                              # (任意) 自動送信ONにする（デフォルト1）
+# - FORM_ENTRY_ID="entry.1391493516"              # ユーザーID設問の entry.<数字>
+# - APP_BASE_URL=http://localhost:8000            # ★今回のご要望どおり localhost を既定値に
 #
-# 開発の初期化
-# - 初期スキーマ変更時は SQLite の DB を削除して再生成（開発時のみ）
+# 注意：
+# - localhost のURLは **自分のPCでしか開けません**。他人にLINEで送る場合は
+#   ngrok 等の外部公開URL（https）を APP_BASE_URL に設定してください。
 # =============================================================================
 
 from __future__ import annotations
@@ -45,23 +41,22 @@ from flask_sqlalchemy import SQLAlchemy
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
-# APScheduler（毎日9時の自動送信用）
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-
 # -----------------------------------------------------------------------------
-# 環境変数
+# 環境変数読み込み
 # -----------------------------------------------------------------------------
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///local.db")
-WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN", "SHARED_SECRET_123")
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
+DATABASE_URL           = os.getenv("DATABASE_URL", "sqlite:///local.db")
+WEBHOOK_TOKEN          = os.getenv("WEBHOOK_TOKEN", "SHARED_SECRET_123")
+LINE_CHANNEL_SECRET    = os.getenv("LINE_CHANNEL_SECRET", "")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
-FORM_BASE_URL = os.getenv("FORM_BASE_URL", "").strip()
-FORM_ENTRY_ID = os.getenv("FORM_ENTRY_ID", "").strip()
-ENABLE_SCHEDULER = os.getenv("ENABLE_SCHEDULER", "1")  # "1" のときだけ有効化
+FORM_BASE_URL          = (os.getenv("FORM_BASE_URL", "") or "").strip()
+FORM_ENTRY_ID          = (os.getenv("FORM_ENTRY_ID", "") or "").strip()
 
+# ★ご要望に合わせ、デフォルトは localhost にしています（本番は必ず外部URLに）
+APP_BASE_URL           = (os.getenv("APP_BASE_URL", "http://localhost:8000") or "").strip()
+
+# タイムゾーン
 JST = ZoneInfo("Asia/Tokyo")
 
 # Googleフォーム側の設問文（namedValues のキーと一致させる）
@@ -92,19 +87,20 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
 # -----------------------------------------------------------------------------
-# モデル
+# DB モデル
 # -----------------------------------------------------------------------------
 class User(db.Model):
     """研究室メンバー等のユーザー。
-    - external_token: 各人固有のトークン（GoogleフォームのプレフィルURLに埋め込む）
-    - line_user_id  : LINEの userId（任意、取得できた人のみ）
-    - display_name  : 表示名（LINEプロフィールのdisplayNameを初回時に反映）
+    - external_token: 各人固有トークン（GoogleフォームのプレフィルURLに埋め込む）
+    - line_user_id  : LINEの userId（任意：取得できた人のみ）
+    - display_name  : 表示名（LINEプロフィールの displayName を初回時に反映）
     """
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
     display_name = db.Column(db.String(255))
     external_token = db.Column(db.String(64), unique=True, index=True, nullable=False)
     line_user_id = db.Column(db.String(64), unique=True)
+
 
 class FormResponse(db.Model):
     """Googleフォームからの1回答（ユーザーと紐づく）。"""
@@ -114,7 +110,7 @@ class FormResponse(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     user = db.relationship("User", backref="responses")
 
-    # 12問すべてNOT NULL
+    # 12問すべて NOT NULL（必須）
     Q1  = db.Column(db.String, nullable=False)
     Q2  = db.Column(db.String, nullable=False)
     Q3  = db.Column(db.String, nullable=False)
@@ -214,15 +210,8 @@ def build_users_overview() -> List[Dict[str, Any]]:
     overview.sort(key=lambda x: order_key.get(x["risk"], 9))
     return overview
 
-# --- 便利: 個別プレフィルURLを作る ---
-def build_prefilled_url(token: str) -> str | None:
-    if not FORM_BASE_URL or not FORM_ENTRY_ID:
-        return None
-    sep = "&" if "?" in FORM_BASE_URL else "?"
-    return f"{FORM_BASE_URL}{sep}{FORM_ENTRY_ID}={token}"
-
 # -----------------------------------------------------------------------------
-# LINE ユーティリティ（プロフィール取得 / push 送信）
+# LINE ユーティリティ（プロフィール取得 / push・reply 送信）
 # -----------------------------------------------------------------------------
 def get_line_profile(user_id: str) -> dict | None:
     """LINEのプロフィール（displayName 等）を取得。"""
@@ -241,7 +230,7 @@ def get_line_profile(user_id: str) -> dict | None:
     return None
 
 def line_push_text(to_user_id: str, text: str) -> None:
-    """ユーザーにテキストメッセージをpush送信。"""
+    """pushメッセージ（任意タイミングで送信）。"""
     if not LINE_CHANNEL_ACCESS_TOKEN:
         raise RuntimeError("LINE_CHANNEL_ACCESS_TOKEN が未設定です")
     url = "https://api.line.me/v2/bot/message/push"
@@ -249,13 +238,24 @@ def line_push_text(to_user_id: str, text: str) -> None:
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
     }
-    payload = {
-        "to": to_user_id,
-        "messages": [{"type": "text", "text": text}],
+    payload = {"to": to_user_id, "messages": [{"type": "text", "text": text}]}
+    r = requests.post(url, headers=headers, json=payload, timeout=10)
+    if r.status_code != 200:
+        raise RuntimeError(f"push error {r.status_code}: {r.text}")
+
+def line_reply_text(reply_token: str, text: str) -> None:
+    """replyメッセージ（イベント直後に即時返信）。友だち追加(follow)時はreplyが確実。"""
+    if not LINE_CHANNEL_ACCESS_TOKEN:
+        raise RuntimeError("LINE_CHANNEL_ACCESS_TOKEN が未設定です")
+    url = "https://api.line.me/v2/bot/message/reply"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
     }
-    res = requests.post(url, headers=headers, json=payload, timeout=10)
-    if res.status_code != 200:
-        raise RuntimeError(f"push error {res.status_code}: {res.text}")
+    payload = {"replyToken": reply_token, "messages": [{"type": "text", "text": text}]}
+    r = requests.post(url, headers=headers, json=payload, timeout=10)
+    if r.status_code != 200:
+        raise RuntimeError(f"reply error {r.status_code}: {r.text}")
 
 # -----------------------------------------------------------------------------
 # Webhook（Googleフォーム → Flask）
@@ -349,7 +349,7 @@ def index():
             .order_by(FormResponse.submitted_at.desc(), FormResponse.id.desc())
             .all())
     ctx = _build_view_context(rows, "全体ダッシュボード", None)
-    ctx["users_overview"] = build_users_overview()  # 上段カード用
+    ctx["users_overview"] = build_users_overview()  # 上段カード（リスク順）
     return render_template("index.html", **ctx)
 
 @app.route("/user/<token>")
@@ -369,133 +369,156 @@ def healthz():
     return "ok", 200
 
 # -----------------------------------------------------------------------------
-# LINE Webhook（followで即送信、messageで案内）
+# LINE Webhook（userId 取得・登録・URL返信）
 # -----------------------------------------------------------------------------
 @app.route("/callback", methods=["POST"])
 def callback():
-    """LINEプラットフォームからのWebhook。
-    - 署名検証
-    - follow: userId 登録＆ external_token 発行 → 個別URLを即 push
-    - message: 該当ユーザーが居ればURLを返す（任意の補助対応）
     """
-    # --- 署名検証（必須） ---
+    LINEプラットフォームからのWebhookを受け取るエンドポイント。
+
+    処理概要:
+      1) 署名検証（X-Line-Signature）
+      2) イベントごとに:
+         - 個人トーク(user)のみ対象
+         - DB上のユーザーを line_user_id で検索、なければ新規作成
+           * external_token 自動発行
+           * display_name は LINE プロフィールから取得（取得失敗時は「未設定」）
+         - フォームURL（プレフィル）と自分専用ダッシュボードURLを返信
+           * 友だち追加イベント(type=follow)は reply API 優先（確実に即時）
+           * それ以外は push API
+    返信メッセージ:
+      - フォームURL: FORM_BASE_URL + "?" + FORM_ENTRY_ID + "=" + external_token
+      - ダッシュボードURL: APP_BASE_URL + "/user/" + external_token
+    """
+    # -------------------------------
+    # 署名検証（必須）
+    # -------------------------------
     signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
-    mac = hmac.new(LINE_CHANNEL_SECRET.encode("utf-8"),
-                   body.encode("utf-8"),
-                   hashlib.sha256).digest()
+    mac = hmac.new(
+        LINE_CHANNEL_SECRET.encode("utf-8"),
+        body.encode("utf-8"),
+        hashlib.sha256
+    ).digest()
     expected = base64.b64encode(mac).decode()
     if not hmac.compare_digest(signature, expected):
+        # 署名不一致 → LINE からの正当な通知ではない
         abort(400, "invalid signature")
 
-    # --- イベント処理 ---
-    data = json.loads(body)
+    # -------------------------------
+    # イベント配列を取り出す
+    # -------------------------------
+    try:
+        data = json.loads(body)
+    except Exception:
+        abort(400, "invalid body json")
+
     events = data.get("events", [])
     if not events:
+        # 空配列でも 200 を返す（LINE 側に「受け取った」と伝えるため）
         return "OK"
 
+    # -------------------------------
+    # 必要な設定をチェック（足りない場合は案内のみ返信）
+    # -------------------------------
+    form_base = (os.getenv("FORM_BASE_URL", "") or "").strip()
+    entry_id  = (os.getenv("FORM_ENTRY_ID", "") or "").strip()
+    app_base  = (os.getenv("APP_BASE_URL", "http://localhost:8000") or "").strip()
+
     for ev in events:
-        etype = ev.get("type")
-        src = ev.get("source", {})
-        if src.get("type") != "user":  # 1:1トークのみ対象（group/roomは除外）
-            continue
-        user_id = src.get("userId")
-        if not user_id:
+        etype = ev.get("type")            # "follow" / "message" など
+        src   = ev.get("source", {})
+        if src.get("type") != "user":
+            # 1:1トーク以外（group/room）はスキップ
             continue
 
-        # ユーザーの確保
+        user_id     = src.get("userId")
+        reply_token = ev.get("replyToken")
+
+        if not user_id:
+            # 想定外だが userId なしの場合はスキップ
+            continue
+
+        # ---------------------------
+        # DB 上のユーザーを用意
+        # （初回は作成、既存は更新）
+        # ---------------------------
         user = User.query.filter_by(line_user_id=user_id).one_or_none()
         if user is None:
+            # 初回: external_token 発行 + LINE プロフィール名取得
             token = issue_external_token()
-            profile = get_line_profile(user_id)
-            display_name = profile.get("displayName") if profile else "未設定"
-            user = User(display_name=display_name,
-                        line_user_id=user_id,
-                        external_token=token)
+            prof  = get_line_profile(user_id)   # {"displayName": "..."} を期待
+            name  = (prof or {}).get("displayName") or "未設定"
+
+            user = User(
+                display_name=name,
+                line_user_id=user_id,
+                external_token=token,
+            )
             db.session.add(user)
             db.session.commit()
         else:
-            # 表示名の補正／external_tokenの穴埋め
-            if (not user.display_name) or (user.display_name == "未設定"):
-                profile = get_line_profile(user_id)
-                if profile and profile.get("displayName"):
-                    user.display_name = profile["displayName"]
+            # 既存: display_name が未設定なら補完、external_token が無ければ発行
+            if not user.display_name or user.display_name == "未設定":
+                prof = get_line_profile(user_id)
+                if prof and prof.get("displayName"):
+                    user.display_name = prof["displayName"]
                     db.session.commit()
             if not user.external_token:
                 user.external_token = issue_external_token()
                 db.session.commit()
 
-        # 個別URL
-        url = build_prefilled_url(user.external_token)
+        # ---------------------------
+        # URL の組み立て
+        # ---------------------------
+        # フォームURL（ユーザーID＝external_token をプレフィル）
+        if form_base and entry_id:
+            sep = "&" if "?" in form_base else "?"
+            form_url = f"{form_base}{sep}{entry_id}={user.external_token}"
+        else:
+            form_url = None
 
-        # follow: 友だち追加の瞬間に送る
-        if etype == "follow" and url:
+        # ダッシュボードURL（このユーザー専用ビュー）
+        # ★ localhost は自分のPCでしか開けない。本番は ngrok 等の https を APP_BASE_URL に。
+        dashboard_url = f"{app_base}/user/{user.external_token}"
+
+        # ---------------------------
+        # 返信文生成
+        # ---------------------------
+        if form_url:
             msg = (
-                f"{user.display_name or 'こんにちは'} さん、友だち追加ありがとう！\n"
-                "毎日のフォームはこちらです👇（ユーザーIDは自動入力済み）\n"
-                f"{url}"
+                f"{user.display_name or 'こんにちは'} さん、以下のURLをご利用ください👇\n\n"
+                f"📋 日次フォーム\n{form_url}\n\n"
+                f"📊 あなたのダッシュボード\n{dashboard_url}\n\n"
+                "※ フォームの『ユーザーID』欄は自動入力されます。変更せずに送信してください。"
             )
-            try:
-                line_push_text(user_id, msg)
-            except Exception as e:
-                print("push error:", e)
+        else:
+            # フォーム設定が無い場合はダッシュボードのみ通知
+            msg = (
+                f"{user.display_name or 'こんにちは'} さん、あなたのダッシュボードはこちらです👇\n"
+                f"{dashboard_url}\n\n"
+                "（フォームURLは未設定のため送れませんでした。管理者に連絡してください）"
+            )
 
-        # 任意: message受信時にも案内（url があるときのみ）
-        if etype == "message" and url:
-            try:
-                line_push_text(user_id, f"本日のフォームはこちらです👇\n{url}")
-            except Exception as e:
-                print("push error:", e)
+        # ---------------------------
+        # 送信（follow=友だち追加時は reply が確実、それ以外は push）
+        # ---------------------------
+        try:
+            if etype == "follow" and reply_token:
+                # 友だち追加の瞬間は reply を使う（最も確実）
+                line_reply_text(reply_token, msg)
+            else:
+                # それ以外（テキスト送信など）のイベントは push でもOK
+                line_push_text(user_id, msg)
+        except Exception as e:
+            # 送信失敗はログに残すが、Webhook 200 は返す
+            print("LINE send error:", e)
 
     return "OK"
 
-# -----------------------------------------------------------------------------
-# 日次9時の自動配信（APScheduler）
-# -----------------------------------------------------------------------------
-def send_daily_forms():
-    """DBに登録済み（line_user_id がある）ユーザー全員へ、毎日9時にURLを配布。"""
-    users = User.query.filter(User.line_user_id.isnot(None)).all()
-    sent, skipped = 0, 0
-    for u in users:
-        if not u.external_token or not u.line_user_id:
-            skipped += 1
-            continue
-        url = build_prefilled_url(u.external_token)
-        if not url:
-            skipped += 1
-            continue
-        msg = (
-            f"{u.display_name or 'おはようございます'} さん、おはようございます！\n"
-            "本日のフォームはこちら👇\n"
-            f"{url}"
-        )
-        try:
-            line_push_text(u.line_user_id, msg)
-            sent += 1
-        except Exception as e:
-            print("daily push error:", e)
-            skipped += 1
-    print(f"[daily_push] sent={sent}, skipped={skipped}, at={datetime.now(JST)}")
-
-def start_scheduler_if_needed():
-    """開発サーバのリロード二重起動を避けつつ、APScheduler を開始。"""
-    if ENABLE_SCHEDULER != "1":
-        print("Scheduler disabled (ENABLE_SCHEDULER!=1)")
-        return
-    # Werkzeug のリローダ下では 2プロセスになるため、本体プロセスのみスケジューラ起動
-    if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
-        return
-    scheduler = BackgroundScheduler(timezone=str(JST))
-    # 毎日 9:00（JST）
-    scheduler.add_job(send_daily_forms,
-                      trigger=CronTrigger(hour=9, minute=0, second=0, timezone=JST),
-                      id="daily_forms_9am_jst",
-                      replace_existing=True)
-    scheduler.start()
-    print("APScheduler started: every day 09:00 JST")
 
 # -----------------------------------------------------------------------------
-# ユーザー手動登録API（デバッグ/代替用途）
+# 手動登録API（デバッグ用）
 # -----------------------------------------------------------------------------
 @app.route("/register_line_user", methods=["POST"])
 def register_line_user():
@@ -516,12 +539,11 @@ def register_line_user():
         })
 
     token = issue_external_token()
-    # display_name が未指定なら LINEから引ける場合は取得
     display_name = name
     if not display_name:
-        profile = get_line_profile(line_user_id)  # ここでは userId=line_user_id を想定
-        if isinstance(profile, dict) and profile.get("displayName"):
-            display_name = profile["displayName"]
+        prof = get_line_profile(line_user_id)  # ここでは userId=line_user_id を想定
+        if isinstance(prof, dict) and prof.get("displayName"):
+            display_name = prof["displayName"]
     if not display_name:
         display_name = "未設定"
 
@@ -534,10 +556,8 @@ def register_line_user():
 # エントリポイント
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
+    # 初回作成（既存テーブルが無い場合のみ）。スキーマ変更時は DB 削除→再作成を推奨（開発時）。
     with app.app_context():
-        db.create_all()  # 初回はテーブル作成
-        # スケジューラ起動（本体プロセスのみ）
-        start_scheduler_if_needed()
-
-    # デバッグサーバ起動
+        db.create_all()
+    # ローカルでUIを確認するなら http://localhost:8000 へアクセス
     app.run(host="0.0.0.0", port=8000, debug=True)
