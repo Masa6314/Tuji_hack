@@ -33,11 +33,13 @@ from collections import OrderedDict, defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 
-from flask import Flask, request, abort, jsonify, render_template
+from flask import Flask, request, abort, jsonify, render_template, session, redirect, url_for
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func  # 将来的な集計で使用可能（今は未必須）
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+import pytz
+from sqlalchemy.orm import relationship, joinedload
 
 # -----------------------------------------------------------------------------
 # 環境変数ロード
@@ -78,6 +80,7 @@ QUESTION_TO_INDEX: Dict[str, int] = {q: i + 1 for i, q in enumerate(QUESTIONS)}
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.secret_key = "your_secret_key_here"
 db = SQLAlchemy(app)
 
 # -----------------------------------------------------------------------------
@@ -90,7 +93,12 @@ class User(db.Model):
     display_name = db.Column(db.String(255))
     external_token = db.Column(db.String(64), unique=True, index=True, nullable=False)
     line_user_id = db.Column(db.String(64), unique=True)
-
+    posts = relationship(
+        "Post",
+        back_populates="user",
+        foreign_keys="Post.user_id",
+        lazy="dynamic",
+    )
 
 class FormResponse(db.Model):
     """フォーム回答（1送信=1レコード）"""
@@ -113,6 +121,20 @@ class FormResponse(db.Model):
     Q10 = db.Column(db.String, nullable=False)
     Q11 = db.Column(db.String, nullable=False)
     Q12 = db.Column(db.String, nullable=False)
+
+class Post(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(50), nullable=False)
+    body  = db.Column(db.String(300), nullable=False)
+    # callableにして毎回“今”が入るように（import時固定を防ぐ）
+    created_at = db.Column(db.DateTime, nullable=False,
+                           default=lambda: datetime.now(pytz.timezone("Asia/Tokyo")))
+    user_id    = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    user = relationship(
+        "User",
+        back_populates="posts",
+        foreign_keys=[user_id],
+    )
 
 # -----------------------------------------------------------------------------
 # ユーティリティ
@@ -438,6 +460,41 @@ def user_dashboard(token: str):
     ctx["login_ranking"] = compute_login_ranking(top_n=3, lookback_days=14)
     ctx["users_overview"] = build_own_users_overview(user_id=user.id)  # 必要なら表示
     return render_template("index_for_user.html", **ctx)
+
+#なりすまし防止　IDの確認をしている
+@app.route("/user/board/<external_token>")
+def user_entry(external_token):
+    user = User.query.filter_by(external_token=external_token).first()
+    if not user:
+        abort(404)
+    # このユーザーをセッションに登録
+    session["user_id"] = user.id
+    session["user_name"] = user.display_name
+    # 掲示板へ飛ばす
+    return redirect(url_for("board"))
+    
+#掲示板
+@app.route("/board", methods=["GET", "POST"])
+def board():
+    uid = session.get("user_id")
+    if not uid:
+        return "ユーザー情報がありません。入口リンクから入り直してください。", 401
+    user = User.query.get(uid)
+    if request.method == "POST":
+        # 投稿データを受け取る
+        title = (request.form.get("title") or "").strip()
+        body  = (request.form.get("body")  or "").strip()
+        if not title or not body:
+            return "タイトルと本文は必須です", 400
+        # user_idをセットして保存
+        post = Post(title=title, body=body, user_id=uid)
+        db.session.add(post)
+        db.session.commit()
+        return redirect(url_for("board"))
+    # GET: 一覧表示
+    posts = Post.query.order_by(Post.created_at.desc()).all()
+    return render_template("board.html", posts=posts, display_name=user.display_name)
+
 
 @app.route("/owner/<token>", endpoint="user_dashboard_v2")
 def owner_dashboard(token: str):
