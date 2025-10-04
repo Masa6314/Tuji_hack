@@ -19,3 +19,4 @@ instance/
 # OSやエディタのゴミファイル
 .DS_Store
 *.swp
+ngrok.exe 

@@ -210,6 +210,46 @@ def build_users_overview() -> List[Dict[str, Any]]:
     overview.sort(key=lambda x: order_key.get(x["risk"], 9))
     return overview
 
+def build_own_users_overview(user_id: int) -> List[Dict[str, Any]]:
+    """指定ユーザーの直近1件を集計してカード用データを返す（1件だけ入ったリスト）。"""
+    overview: List[Dict[str, Any]] = []
+
+    u = User.query.get(user_id)
+    if not u:
+        # 必要に応じて None を返すか、例外にする
+        return overview
+
+    r = (FormResponse.query
+         .filter_by(user_id=u.id)
+         .order_by(FormResponse.submitted_at.desc(), FormResponse.id.desc())
+         .first())
+
+    if not r:
+        overview.append({
+            "display_name": u.display_name or "未設定",
+            "external_token": u.external_token,
+            "latest_score": None,
+            "latest_status": "未回答",
+            "latest_at": "-",
+            "risk": "none",
+        })
+    else:
+        score = total_score_row(r)
+        overview.append({
+            "display_name": u.display_name or "未設定",
+            "external_token": u.external_token,
+            "latest_score": score,
+            "latest_status": status_label(score),
+            "latest_at": to_jst(r.submitted_at).strftime("%Y-%m-%d %H:%M:%S"),
+            "risk": risk_level(score),
+        })
+
+    # 単一要素なので並べ替えは不要だが、残しても問題なし
+    # order_key = {"high": 0, "mid": 1, "low": 2, "none": 3}
+    # overview.sort(key=lambda x: order_key.get(x["risk"], 9))
+
+    return overview
+
 # -----------------------------------------------------------------------------
 # LINE ユーティリティ（プロフィール取得 / push・reply 送信）
 # -----------------------------------------------------------------------------
@@ -362,7 +402,8 @@ def user_dashboard(token: str):
             .order_by(FormResponse.submitted_at.desc(), FormResponse.id.desc())
             .all())
     ctx = _build_view_context(rows, f"{user.display_name or 'ユーザー'} のダッシュボード", user.display_name)
-    return render_template("index.html", **ctx)
+    ctx["users_overview"] = build_own_users_overview(user_id=user.id)  # 上段カード
+    return render_template("index_for_user.html", **ctx)
 
 @app.route("/healthz")
 def healthz():
