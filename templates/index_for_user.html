@@ -1,76 +1,112 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>{{ page_title }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-50 text-gray-900">
-
   <div class="max-w-6xl mx-auto p-6">
 
-    <!-- ページタイトル -->
+    <!-- タイトル -->
     <h1 class="text-2xl font-bold mb-6">{{ page_title }}</h1>
 
-    <div class="mt-6">
-      <h2 class="text-xl font-bold mb-2">{{user_name}}の状態</h2>
-      <div class="text-sm text-gray-500 mb-2">
-        赤=要対応 / 黄=注意 / 緑=良好 / 灰=未回答
-      </div>
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {% for u in users_overview %}
-        <div class="border rounded-lg p-4 shadow-sm
-                    {% if u.risk == 'high' %}border-red-400 bg-red-50
-                    {% elif u.risk == 'mid' %}border-yellow-400 bg-yellow-50
-                    {% elif u.risk == 'low' %}border-green-400 bg-green-50
-                    {% else %}border-gray-300 bg-gray-50{% endif %}">
-          <div class="flex items-center justify-between mb-2">
-            <div class="font-semibold text-lg">{{ u.display_name }}</div>
-            <span class="text-xs px-2 py-1 rounded
-              {% if u.risk == 'high' %}bg-red-500 text-white
-              {% elif u.risk == 'mid' %}bg-yellow-500 text-white
-              {% elif u.risk == 'low' %}bg-green-500 text-white
-              {% else %}bg-gray-400 text-white{% endif %}">
-              {% if u.risk == 'high' %}要対応
-              {% elif u.risk == 'mid' %}注意
-              {% elif u.risk == 'low' %}良好
-              {% else %}未回答{% endif %}
-            </span>
+    <!-- ===== 個人の状態（横長カード＋表情アイコン） ===== -->
+    <div class="mb-8">
+      <h2 class="text-xl font-bold mb-2">{{ user_name }} の状態</h2>
+      <div class="text-sm text-gray-500 mb-2">赤=要対応 / 黄=注意 / 緑=良好 / 灰=未回答</div>
+
+      <div class="border rounded-xl p-5 shadow-sm bg-white">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div class="flex items-center gap-5">
+            <!-- 表情アイコン（JSでスコアから切替） -->
+            <img id="state-face" alt="mood" class="w-16 h-16 object-contain" />
+            <div class="text-5xl font-extrabold leading-none">{{ latest_score }}</div>
+            <div>
+              <div class="text-sm text-gray-500">最終: {{ latest_at }}</div>
+              <div class="text-base">{{ latest_status }}</div>
+            </div>
           </div>
-          <div class="text-sm text-gray-600">最終: {{ u.latest_at }}</div>
-          <div class="mt-2 text-2xl font-bold">
-            {{ u.latest_score if u.latest_score is not none else "-" }}
-          </div>
-          <div class="text-sm">{{ u.latest_status }}</div>
-          <div class="mt-3 flex gap-2">
-            <a href="/user/{{ u.external_token }}"
-               class="bg-blue-500 text-white text-sm px-3 py-1 rounded">
-               人別ダッシュボード
-            </a>
-            <button onclick="navigator.clipboard.writeText('{{ request.url_root }}user/{{ u.external_token }}')"
-                    class="border text-sm px-3 py-1 rounded">
-              リンクをコピー
+          <div class="flex items-center gap-2">
+            <button
+              onclick="navigator.clipboard.writeText(window.location.href)"
+              class="border text-sm px-3 py-2 rounded hover:bg-gray-50">
+              このページのリンクをコピー
             </button>
           </div>
         </div>
-        {% endfor %}
       </div>
     </div>
 
-    <!-- スコアチャート -->
+    <!-- ===== 直近の利用日数ランキング（TOP3） ===== -->
+    <div class="bg-white rounded-lg shadow p-4 mb-8">
+      <h2 class="text-lg font-bold mb-3">直近の利用日数ランキング（TOP3）</h2>
+      <table class="min-w-full border border-gray-200">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="border px-3 py-2 text-left">順位</th>
+            <th class="border px-3 py-2 text-left">名前</th>
+            <th class="border px-3 py-2 text-right">ログイン日数</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in login_ranking %}
+          <tr class="hover:bg-gray-50">
+            <td class="border px-3 py-2">
+              {% if loop.index == 1 %}
+                🥇 1
+              {% elif loop.index == 2 %}
+                🥈 2
+              {% elif loop.index == 3 %}
+                🥉 3
+              {% else %}
+                {{ loop.index }}
+              {% endif %}
+            </td>
+            <td class="border px-3 py-2">{{ row.display_name }}</td>
+            <td class="border px-3 py-2 text-right">{{ row.days }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ===== 回答カレンダー（顔スタンプ） ===== -->
+    <div id="answer-calendar"
+      class="bg-white rounded-lg shadow p-4 mb-8"
+      data-latest-at="{{ latest_at | e }}"
+      data-latest-score="{{ latest_score if latest_score is not none else '' }}"
+      data-chart-labels='{{ chart_labels|tojson }}'
+      data-img-good="{{ url_for('static', filename='images/business_man1_4_laugh.png', _external=True) }}?v={{ asset_ver }}"
+      data-img-mid ="{{ url_for('static', filename='images/business_man1_1_smile.png', _external=True) }}?v={{ asset_ver }}"
+      data-img-bad ="{{ url_for('static', filename='images/business_man1_3_cry.png', _external=True) }}?v={{ asset_ver }}">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-bold" id="cal-title">回答カレンダー</h2>
+        <div class="space-x-2 text-sm">
+          <button id="cal-prev" class="px-3 py-1 rounded border hover:bg-gray-50">← 前月</button>
+          <button id="cal-next" class="px-3 py-1 rounded border hover:bg-gray-50">翌月 →</button>
+        </div>
+      </div>
+      <div class="grid grid-cols-7 text-center text-xs font-medium text-gray-600 mb-2">
+        <div>日</div><div>月</div><div>火</div><div>水</div><div>木</div><div>金</div><div>土</div>
+      </div>
+      <style>
+        .stamp-img { width: 84px; height: 60px; object-fit: contain; margin: 0 auto; }
+        @media (min-width: 1024px) { .stamp-img { width: 100px; height: 72px; } }
+      </style>
+      <div id="cal-grid" class="grid grid-cols-7 gap-1"></div>
+      <div id="cal-note" class="mt-3 text-xs text-gray-500"></div>
+    </div>
+
+    <!-- ===== スコア推移（点＆線の色を状態色に同期） ===== -->
     <div class="bg-white rounded-lg shadow p-4 mb-8">
       <h2 class="text-lg font-bold mb-2">スコア推移</h2>
       <canvas id="scoreChart"></canvas>
     </div>
 
-    <!-- 1) メンバーの状態 -->
-
-
-    <!-- ▼ 間に余白 -->
-    <div class="mt-10"></div>
-
-    <!-- 2) 最新回答の内訳 -->
+    <!-- ===== 最新回答の内訳 ===== -->
     <div class="mt-6">
       <h2 class="text-xl font-bold mb-2">最新回答の内訳</h2>
       <table class="min-w-full border border-gray-300">
@@ -99,31 +135,156 @@
 
   </div>
 
-  <!-- チャート描画 -->
+  <!-- ===== JS：表情アイコン切替・カレンダー描画・チャート描画 ===== -->
   <script>
-    const ctx = document.getElementById('scoreChart');
-    new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: {{ chart_labels|tojson }},
-        datasets: [{
-          label: 'スコア',
-          data: {{ chart_values|tojson }},
-          borderColor: 'rgb(75, 192, 192)',
-          tension: 0.2
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { display: false }
-        },
-        scales: {
-          y: { beginAtZero: true, max: 12 }
-        }
-      }
-    });
-  </script>
+    // ====== 画像URLと最新スコアから表情を決める ======
+    (function () {
+      const root = document.getElementById('answer-calendar');
+      if (!root) return;
 
+      const latestAtStr    = (root.dataset.latestAt || '').trim();   // "YYYY-MM-DD HH:MM:SS" or "-"
+      const latestScoreStr = (root.dataset.latestScore || '').trim(); // "0..12" or ""
+      const labels         = JSON.parse(root.dataset.chartLabels || '[]'); // ["YYYY-MM-DD", ...]
+
+      // 絶対URL（_external=True）＋キャッシュバスター
+      const imgGood = root.dataset.imgGood;
+      const imgMid  = root.dataset.imgMid;
+      const imgBad  = root.dataset.imgBad;
+
+      const toNumber = (s) => (s === '' ? NaN : Number(s));
+      const latestScore = toNumber(latestScoreStr);
+
+      const stampImageByScore = (score) => {
+        if (typeof score !== 'number' || isNaN(score)) return imgMid; // 未設定は中
+        if (score >= 4) return imgBad; // 点が高いほど要注意＝赤
+        if (score >= 2) return imgMid; // 黄
+        return imgGood;                // 緑
+      };
+
+      // 個人状態の顔アイコンをセット
+      const faceEl = document.getElementById('state-face');
+      if (faceEl) faceEl.src = stampImageByScore(latestScore);
+
+      // ====== 回答カレンダー ======
+      const STAMP_IMG = stampImageByScore(latestScore);
+      const stampSet = new Set(labels);
+
+      const grid   = document.getElementById('cal-grid');
+      const title  = document.getElementById('cal-title');
+      const note   = document.getElementById('cal-note');
+      const prevBtn= document.getElementById('cal-prev');
+      const nextBtn= document.getElementById('cal-next');
+
+      let baseDate;
+      if (latestAtStr && latestAtStr !== '-') {
+        const [ymd] = latestAtStr.split(' ');
+        const [Y, M] = ymd.split('-').map(Number);
+        baseDate = new Date(Y, M - 1, 1);
+      } else {
+        const now = new Date();
+        baseDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      }
+
+      const ymdStr = (d) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      };
+
+      function drawCalendar(year, monthIndex) {
+        title.textContent = `回答カレンダー（${year}年 ${monthIndex + 1}月）`;
+
+        const first = new Date(year, monthIndex, 1);
+        const last  = new Date(year, monthIndex + 1, 0);
+        const daysInMonth = last.getDate();
+        const padStart = first.getDay(); // 0=日
+
+        const cells = [];
+        for (let i = 0; i < padStart; i++) {
+          cells.push(`<div class="border rounded p-2 h-20 bg-gray-50"></div>`);
+        }
+        for (let d = 1; d <= daysInMonth; d++) {
+          const cellDate = new Date(year, monthIndex, d);
+          const iso = ymdStr(cellDate);
+          const stamped = stampSet.has(iso);
+          const inner = stamped
+            ? `<img src="${STAMP_IMG}" alt="" class="stamp-img" />`
+            : `<div class="h-full"></div>`;
+          cells.push(`
+            <div class="border rounded p-2 h-20 relative ${stamped ? 'ring-2 ring-blue-400' : ''}">
+              <div class="text-[11px] text-gray-500 absolute top-1 left-1">${d}</div>
+              <div class="flex items-center justify-center h-full">${inner}</div>
+            </div>
+          `);
+        }
+        const used = padStart + daysInMonth;
+        const needPadEnd = (Math.ceil(used / 7) * 7) - used;
+        for (let i = 0; i < needPadEnd; i++) {
+          cells.push(`<div class="border rounded p-2 h-20 bg-gray-50"></div>`);
+        }
+        grid.innerHTML = cells.join('');
+
+        const monthStr = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+        const hits = labels.filter(s => s.startsWith(monthStr));
+        note.textContent = hits.length ? `この月の回答日: ${hits.join(', ')}` : '';
+      }
+
+      drawCalendar(baseDate.getFullYear(), baseDate.getMonth());
+
+      prevBtn.addEventListener('click', () => {
+        baseDate.setMonth(baseDate.getMonth() - 1);
+        drawCalendar(baseDate.getFullYear(), baseDate.getMonth());
+      });
+      nextBtn.addEventListener('click', () => {
+        baseDate.setMonth(baseDate.getMonth() + 1);
+        drawCalendar(baseDate.getFullYear(), baseDate.getMonth());
+      });
+    })();
+
+    // ====== スコア推移（点＆線の色を状態色に同期） ======
+    (function () {
+      const labels = {{ chart_labels|tojson }};
+      const values = {{ chart_values|tojson }};
+      const pointColors = {{ chart_point_colors|tojson }};
+
+      const colorFor = (y) => {
+        if (y >= 4) return '#ef4444';   // red-500
+        if (y >= 2) return '#f59e0b';   // amber-500
+        return '#10b981';               // emerald-500
+      };
+
+      const ctx = document.getElementById('scoreChart');
+      if (!ctx) return;
+
+      new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: 'スコア',
+            data: values,
+            pointBackgroundColor: pointColors,
+            pointBorderColor: pointColors,
+            pointRadius: 4,
+            borderWidth: 2,
+            segment: {
+              borderColor: ctx => colorFor(ctx.p0.parsed.y),
+            },
+            tension: 0.2,
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { display: false }
+          },
+          scales: {
+            y: { beginAtZero: true, max: 12 }
+          }
+        }
+      });
+    })();
+  </script>
 </body>
 </html>

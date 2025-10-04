@@ -51,13 +51,13 @@
           </div>
           <div class="text-sm">{{ u.latest_status }}</div>
           <div class="mt-3 flex gap-2">
-            <a href="/user/{{ u.external_token }}"
+            <a href="/owner/{{ u.external_token }}"
                class="bg-blue-500 text-white text-sm px-3 py-1 rounded">
                人別ダッシュボード
             </a>
-            <button onclick="navigator.clipboard.writeText('{{ request.url_root }}user/{{ u.external_token }}')"
+            <button onclick="navigator.clipboard.writeText('{{ request.url_root }}owner/{{ u.external_token }}')"
                     class="border text-sm px-3 py-1 rounded">
-              リンクをコピー
+              リンクをコピ
             </button>
           </div>
         </div>
