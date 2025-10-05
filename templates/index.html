@@ -13,12 +13,18 @@
     <!-- ページタイトル -->
     <h1 class="text-2xl font-bold mb-6">{{ page_title }}</h1>
 
-    <!-- スコアチャート -->
+    <!-- スコアチャート
     <div class="bg-white rounded-lg shadow p-4 mb-8">
       <h2 class="text-lg font-bold mb-2">スコア推移</h2>
       <canvas id="scoreChart"></canvas>
-    </div>
+    </div> -->
 
+    <a href="{{ url_for('owner_board') }}"
+    class="inline-flex items-center gap-2 rounded-md bg-indigo-600 text-white px-4 py-2 text-sm font-medium shadow-sm
+          transition duration-150 hover:bg-indigo-700 active:scale-95">
+    💬 管理者用掲示板（読み取り）
+    </a>
+    
     <!-- 1) メンバーの状態 -->
     <div class="mt-6">
       <h2 class="text-xl font-bold mb-2">メンバーの状態（リスク順）</h2>
@@ -51,14 +57,17 @@
           </div>
           <div class="text-sm">{{ u.latest_status }}</div>
           <div class="mt-3 flex gap-2">
-            <a href="/owner/{{ u.external_token }}"
-               class="bg-blue-500 text-white text-sm px-3 py-1 rounded">
-               人別ダッシュボード
-            </a>
-            <button onclick="navigator.clipboard.writeText('{{ request.url_root }}owner/{{ u.external_token }}')"
-                    class="border text-sm px-3 py-1 rounded">
-              リンクをコピ
-            </button>
+        <a href="/owner/{{ u.external_token }}"
+          class="bg-blue-500 text-white text-sm px-3 py-1 rounded shadow-sm 
+                  transition duration-150 hover:bg-blue-600 active:bg-blue-700 active:scale-95">
+          人別ダッシュボード
+        </a>
+          <button
+            onclick="copyToClipboard('{{ request.url_root }}owner/{{ u.external_token }}', this)"
+            class="border text-sm px-3 py-1 rounded flex items-center gap-1 transition duration-150 hover:bg-gray-100 active:scale-95"
+          >
+            📋️ リンクをコピー
+          </button>
           </div>
         </div>
         {% endfor %}
@@ -66,10 +75,10 @@
     </div>
 
     <!-- ▼ 間に余白 -->
-    <div class="mt-10"></div>
+    <!-- <div class="mt-10"></div> -->
 
     <!-- 2) 最新回答の内訳 -->
-    <div class="mt-6">
+    <!-- <div class="mt-6">
       <h2 class="text-xl font-bold mb-2">最新回答の内訳</h2>
       <table class="min-w-full border border-gray-300">
         <thead class="bg-gray-100">
@@ -95,10 +104,10 @@
       </table>
     </div>
 
-  </div>
+  </div> -->
 
   <!-- チャート描画 -->
-  <script>
+  <!-- <script>
     const ctx = document.getElementById('scoreChart');
     new Chart(ctx, {
       type: 'line',
@@ -121,7 +130,7 @@
         }
       }
     });
-  </script>
+  </script> -->
 
 </body>
 </html>

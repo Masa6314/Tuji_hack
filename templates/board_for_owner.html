@@ -214,10 +214,10 @@
 <body>
     <div class="container">
         <!-- 戻る先を /user/<token> に -->
-        <a href="{{ url_for('user_dashboard', token=token) }}" class="back-btn">← 戻る</a>
+        <a href="{{ url_for('index') }}" class="back-btn">← 戻る</a>
 
         <h1>掲示板</h1>
-        <p>ようこそ、{{ display_name }} さん！</p>
+        <p>ようこそ、管理者 さん！</p>
         <!-- :カチンコ: YouTubeギャラリー -->
         <h2>癒しのどうぶつ動画</h2>
         <div class="youtube-gallery">
@@ -234,12 +234,12 @@
                 <p>癒し動画</p>
             </div>
         </div>
-        <h2>新規投稿</h2>
+        <!-- <h2>新規投稿</h2>
         <form method="POST">
             <label for="body">内容</label>
             <textarea name="body" rows="3" placeholder="メッセージを入力..." required></textarea>
             <input type="submit" value="投稿する">
-        </form>
+        </form> -->
 
         <h2>元気出して！！</h2>
         <div class="posts">

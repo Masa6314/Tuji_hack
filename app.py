@@ -124,9 +124,9 @@ class FormResponse(db.Model):
 
 class Post(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(50), nullable=False)
+    title = db.Column(db.String(50), nullable=True, default="（無題）") #変更
     body  = db.Column(db.String(300), nullable=False)
-    # callableにして毎回“今”が入るように（import時固定を防ぐ）
+    # callableにして毎回"今"が入るように（import時固定を防ぐ）
     created_at = db.Column(db.DateTime, nullable=False,
                            default=lambda: datetime.now(pytz.timezone("Asia/Tokyo")))
     user_id    = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
@@ -135,7 +135,6 @@ class Post(db.Model):
         back_populates="posts",
         foreign_keys=[user_id],
     )
-
 # -----------------------------------------------------------------------------
 # ユーティリティ
 # -----------------------------------------------------------------------------
@@ -484,8 +483,8 @@ def board():
         # 投稿データを受け取る
         title = (request.form.get("title") or "").strip()
         body  = (request.form.get("body")  or "").strip()
-        if not title or not body:
-            return "タイトルと本文は必須です", 400
+        if not body:
+            return "本文は必須です", 400
         # user_idをセットして保存
         post = Post(title=title, body=body, user_id=uid)
         db.session.add(post)
@@ -493,8 +492,29 @@ def board():
         return redirect(url_for("board"))
     # GET: 一覧表示
     posts = Post.query.order_by(Post.created_at.desc()).all()
-    return render_template("board.html", posts=posts, display_name=user.display_name)
+    return render_template("board.html", posts=posts, display_name=user.display_name, token=user.external_token) #追加
 
+#ownerの掲示板
+@app.route("/owner/board", methods=["GET"])
+def owner_board():
+    # uid = session.get("user_id")
+    # if not uid:
+    #     return "ユーザー情報がありません。入口リンクから入り直してください。", 401
+    # user = User.query.get(uid)
+    # if request.method == "POST":
+    #     # 投稿データを受け取る
+    #     title = (request.form.get("title") or "").strip()
+    #     body  = (request.form.get("body")  or "").strip()
+    #     if not title or not body:
+    #         return "タイトルと本文は必須です", 400
+    #     # user_idをセットして保存
+    #     post = Post(title=title, body=body, user_id=uid)
+    #     db.session.add(post)
+    #     db.session.commit()
+    #     return redirect(url_for("board"))
+    # GET: 一覧表示
+    posts = Post.query.order_by(Post.created_at.desc()).all()
+    return render_template("board_for_owner.html", posts=posts)
 
 @app.route("/owner/<token>", endpoint="user_dashboard_v2")
 def owner_dashboard(token: str):
